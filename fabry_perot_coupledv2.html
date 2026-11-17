@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coupled Fabry–Pérot cavities, colour map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;600&family=Spectral:wght@500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<style>
+  :root{
+    --bg:#1f2227; --panel:#2a2e35; --line:#434852; --ink:#ebe8e2; --mute:#a3a8b0; --acc:#8dbbd0;
+    color-scheme: dark;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Figtree,system-ui,sans-serif}
+  header{padding:22px 28px 6px}
+  h1{font:500 28px/1.2 Spectral,Georgia,serif;margin:0}
+  header p{margin:6px 0 0;color:var(--mute);max-width:75ch}
+  main{display:grid;grid-template-columns:350px 1fr;gap:20px;padding:18px 28px 32px}
+  @media(max-width:900px){main{grid-template-columns:1fr;padding:14px}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px}
+  .ctl{margin-bottom:14px}
+  .ctl label{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:600}
+  .val{display:inline-flex;align-items:baseline;gap:4px;font-weight:400;color:var(--acc)}
+  .val input{width:84px;background:#1b1e23;border:1px solid var(--line);border-radius:3px;color:var(--acc);
+    font:inherit;text-align:right;padding:1px 6px;font-variant-numeric:tabular-nums}
+  .val input:hover{border-color:var(--mute)}
+  .val input:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+  .val i{font-style:normal;color:var(--mute);min-width:1.6em}
+  .ctl small{display:block;color:var(--mute);margin-top:2px}
+  input[type=range]{width:100%;accent-color:var(--acc);margin:6px 0 0}
+  input[type=range]:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
+  fieldset{border:0;border-top:1px solid var(--line);margin:14px 0 0;padding:12px 0 0}
+  legend{color:var(--mute);padding:0 6px 0 0}
+  .right{display:flex;flex-direction:column;gap:16px;min-width:0}
+  canvas{width:100%;display:block;background:#16181c;border-radius:4px}
+  .row{display:flex;gap:16px;align-items:stretch;flex-wrap:wrap}
+  .swatch{flex:0 0 190px;display:flex;flex-direction:column;gap:8px}
+  #sw{flex:1;min-height:90px;border-radius:4px;border:1px solid var(--line);background:#fff}
+  .stats{flex:1;min-width:240px;display:grid;grid-template-columns:auto 1fr;gap:4px 14px;align-content:start}
+  .stats dt{color:var(--mute)} .stats dd{margin:0;font-variant-numeric:tabular-nums}
+  #status{color:var(--mute);margin:0 0 4px}
+  .warn{color:#e9b872}
+  h2{font:600 15px/1.3 Figtree,sans-serif;margin:0 0 10px}
+  .stat{font-weight:400;color:var(--mute);margin-left:8px}
+  .note{color:var(--mute);margin:8px 0 0;max-width:80ch}
+</style>
+</head>
+<body>
+<header>
+  <h1>Two coupled Fabry–Pérot cavities</h1>
+  <p>White, unpolarized light enters through mirror M1. Light transmitted by M1 crosses cavity 1, then M2 , then cavity 2, and the last mirror M3. Everything you see leaves back through M1. Click any number next to a slider to type a value of your own.</p>
+</header>
+<main>
+  <section class="panel" aria-label="Controls">
+    <p id="status">Loading Python (Pyodide)…</p>
+    <div id="controls"></div>
+  </section>
+
+  <div class="right">
+    <section class="panel"><h2>Cavities</h2><canvas id="cav" width="900" height="250"></canvas></section>
+    <section class="panel"><h2>Reflected spectrum</h2><canvas id="spec" width="900" height="300"></canvas></section>
+    <section class="panel row">
+      <div class="swatch"><h2>Perceived colour</h2><div id="sw"></div></div>
+      <dl class="stats" id="stats"></dl>
+    </section>
+    <section class="panel">
+      <h2>Colour map: reflected colour for every (L₁, L₂) <span id="mapstat" class="stat"></span></h2>
+      <canvas id="map" width="900" height="460" style="cursor:crosshair;touch-action:none"></canvas>
+      <p class="note">Mirror reflectances, radii and mode mismatch are held at the values set on the left. Click or drag on the map to move L₁ and L₂ to that point. Dimmed cells are unstable in cavity 1.</p>
+    </section>
+  </div>
+</main>
+
+<script type="text/python" id="sim">
+import math, cmath, json
+
+WL = [380 + 0.25 * i for i in range(1601)]
+
+def _g(x, mu, s1, s2):
+    t = (x - mu) / (s1 if x < mu else s2)
+    return math.exp(-0.5 * t * t)
+
+def _cmf(l):  # CIE 1931 fit (Wyman, Sloan, Shirley 2013)
+    x = 1.056*_g(l,599.8,37.9,31.0) + 0.362*_g(l,442.0,16.0,26.7) - 0.065*_g(l,501.1,20.4,26.2)
+    y = 0.821*_g(l,568.8,46.9,40.5) + 0.286*_g(l,530.9,16.3,31.1)
+    z = 1.217*_g(l,437.0,11.8,36.0) + 0.681*_g(l,459.0,26.0,13.8)
+    return x, y, z
+
+CM = [_cmf(l) for l in WL]
+
+def _lin(X, Y, Z):
+    return (3.2406*X - 1.5372*Y - 0.4986*Z,
+            -0.9689*X + 1.8758*Y + 0.0415*Z,
+            0.0557*X - 0.2040*Y + 1.0570*Z)
+
+# Equal-energy white source: the reference that maps to pure white when R(lambda) = 1.
+WHITE = _lin(sum(c[0] for c in CM), sum(c[1] for c in CM), sum(c[2] for c in CM))
+
+def _enc(v):
+    v = min(1.0, max(0.0, v))
+    return 12.92*v if v <= 0.0031308 else 1.055*v**(1/2.4) - 0.055
+
+def _cavity(L, Ra, Rb):
+    """Stability and Gouy phase per transit. Radii in nm, 0 means flat, positive is concave."""
+    ga = 1 if Ra == 0 else 1 - L / Ra
+    gb = 1 if Rb == 0 else 1 - L / Rb
+    p = ga * gb
+    if 0.0 <= p <= 1.0:
+        return True, math.acos(math.copysign(math.sqrt(p), ga)), ga, gb
+    return False, 0.0, ga, gb
+
+WLC = [380 + 1.0 * i for i in range(401)]        # coarser grid, used for the colour map only
+CMC = [_cmf(l) for l in WLC]
+WHITEC = _lin(sum(c[0] for c in CMC), sum(c[1] for c in CMC), sum(c[2] for c in CMC))
+
+def _reflect(grid, L1, L2, c1, c3, R1, R2, R3, a, nmax=40, wmin=1e-4):
+    st1, th1, g1a, g1b = _cavity(L1, c1, 0)    # cavity 1: M1 (curved) and M2 (flat)
+    st2, th2, g2a, g2b = _cavity(L2, 0, c3)    # cavity 2: M2 (flat) and M3 (curved)
+    info = (st1, st2, th1, th2, (g1a, g1b), (g2a, g2b))
+    r1 = math.sqrt(R1); r2 = math.sqrt(R2); rho3 = math.sqrt(R3)
+    if not st1:
+        return [R1] * len(grid), info           # no resonance: only the entrance surface returns light
+    modes = [(N, (N + 1) * a**N) for N in range(nmax + 1)]
+    modes = [(N, w) for N, w in modes if w > wmin]
+    tw = sum(w for _, w in modes)
+    modes = [(N, w / tw) for N, w in modes]
+    Rs = []
+    for l in grid:
+        b1 = 4 * math.pi * L1 / l
+        b2 = 4 * math.pi * L2 / l
+        tot = 0.0
+        for N, w in modes:
+            if st2:
+                z2 = cmath.exp(1j * (b2 - 2 * (N + 1) * th2))
+                B = r2 - (1 - R2) * rho3 * z2 / (1 - r2 * rho3 * z2)   # M2 + gap 2 + M3 seen from gap 1
+            else:
+                B = r2                                                  # light entering gap 2 is lost
+            B *= cmath.exp(1j * (b1 - 2 * (N + 1) * th1))
+            r = r1 - (1 - R1) * B / (1 - r1 * B)
+            tot += w * (r.real * r.real + r.imag * r.imag)
+        Rs.append(tot)
+    return Rs, info
+
+def _rgb(cm, white, Rs):
+    X = sum(c[0] * R for c, R in zip(cm, Rs))
+    Y = sum(c[1] * R for c, R in zip(cm, Rs))
+    Z = sum(c[2] * R for c, R in zip(cm, Rs))
+    lin = _lin(X, Y, Z)
+    return [round(255 * _enc(lin[i] / white[i])) for i in range(3)]
+
+def simulate(L1, L2, c1, c3, R1, R2, R3, a):
+    Rs, (st1, st2, th1, th2, g1, g2) = _reflect(WL, L1, L2, c1, c3, R1, R2, R3, a)
+    return json.dumps({
+        "R": [round(v, 4) for v in Rs], "rgb": _rgb(CM, WHITE, Rs),
+        "st1": st1, "st2": st2, "g1": list(g1), "g2": list(g2),
+        "th1": th1, "th2": th2,
+        "fsr1": 550.0**2 / (2 * L1), "fsr2": 550.0**2 / (2 * L2),
+        "mean": sum(Rs) / len(Rs),
+    })
+
+def map_row(j, n, lo, hi, c1, c3, R1, R2, R3, a):
+    """One row of the colour map: fixed L2 (row j), L1 swept over n cells. Returns r,g,b,stable per cell."""
+    L2 = lo + (hi - lo) * (j + 0.5) / n
+    out = []
+    for i in range(n):
+        L1 = lo + (hi - lo) * (i + 0.5) / n
+        Rs, info = _reflect(WLC, L1, L2, c1, c3, R1, R2, R3, a, 8, 1e-3)
+        out.extend(_rgb(CMC, WHITEC, Rs))
+        out.append(1 if info[0] else 0)
+    return json.dumps(out)
+</script>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// lo/hi are the hard limits for typed values; min/max/step only shape the slider.
+const GROUPS = [
+  {title:'Cavity lengths', items:[
+    {id:'L1', label:'Cavity 1 length L₁', min:1, max:1000, step:1, val:325, unit:'nm', lo:0.1, hi:1e9},
+    {id:'L2', label:'Cavity 2 length L₂', min:1, max:1000, step:1, val:330, unit:'nm', lo:0.1, hi:1e9},
+  ]},
+  {title:'M1: entrance mirror, partially reflecting', items:[
+    {id:'c1', label:'Radius of curvature', min:-2000, max:2000, step:10, val:0, unit:'nm', lo:-1e9, hi:1e9,
+     hint:'0 means flat. Positive is concave toward the cavity, negative is convex.'},
+    {id:'R1', label:'Reflectance R₁', min:0.1, max:0.99, step:0.005, val:0.3, unit:'', lo:0, hi:0.9999},
+  ]},
+  {title:'M2: middle mirror, flat, partially reflecting', items:[
+    {id:'R2', label:'Reflectance R₂', min:0.1, max:0.99, step:0.005, val:0.3, unit:'', lo:0, hi:0.9999},
+  ]},
+  {title:'M3: back mirror', items:[
+    {id:'c3', label:'Radius of curvature', min:-2000, max:2000, step:10, val:0, unit:'nm', lo:-1e9, hi:1e9},
+    {id:'R3', label:'Reflectance R₃', min:0.1, max:1, step:0.005, val:0.3, unit:'', lo:0, hi:1,
+     hint:'R₃ = 1 is lossless: every wavelength comes back and the output stays white.'},
+  ]},
+  {title:'Colour map axes (both L₁ and L₂)', items:[
+    {id:'mlo', label:'Map minimum L', min:1, max:1000, step:1, val:100, unit:'nm', lo:1, hi:1e6},
+    {id:'mhi', label:'Map maximum L', min:100, max:3000, step:10, val:1000, unit:'nm', lo:2, hi:1e6},
+    {id:'mres', label:'Map resolution', min:20, max:120, step:5, val:50, unit:'cells', lo:5, hi:300,
+     hint:'Cells per axis. Higher is sharper but slower.'},
+  ]},
+  {title:'Input beam', items:[
+    {id:'a', label:'Transverse mode mismatch', min:0, max:0.9, step:0.01, val:0, unit:'', lo:0, hi:0.95,
+     hint:'0 couples only the fundamental mode. Higher values add higher-order modes, which sit at different wavelengths in a curved cavity.'},
+  ]},
+];
+const ITEMS = GROUPS.flatMap(g => g.items);
+const P = {};              // current parameter values (may lie outside the slider range)
+ITEMS.forEach(it => P[it.id] = it.val);
+
+const fmtNum = v => String(Number(Number(v).toPrecision(6)));
+
+// build controls
+(function build(){
+  const root = $('controls');
+  GROUPS.forEach((g, gi) => {
+    const fs = document.createElement('fieldset');
+    fs.innerHTML = `<legend>${g.title}</legend>`;
+    g.items.forEach(it => {
+      const d = document.createElement('div'); d.className = 'ctl';
+      d.innerHTML =
+        `<label for="${it.id}">${it.label}<span class="val">` +
+        `<input id="v${it.id}" type="text" inputmode="decimal" autocomplete="off" aria-label="${it.label}, type a value">` +
+        `<i>${it.unit}</i></span></label>` +
+        `<input id="${it.id}" type="range" min="${it.min}" max="${it.max}" step="${it.step}" value="${it.val}">` +
+        (it.hint ? `<small>${it.hint}</small>` : '');
+      fs.appendChild(d);
+    });
+    root.appendChild(fs);
+  });
+  ITEMS.forEach(it => {
+    const s = $(it.id), t = $('v' + it.id);
+    t.value = fmtNum(it.val);
+    s.addEventListener('input', () => { P[it.id] = +s.value; t.value = fmtNum(P[it.id]); schedule(); });
+    t.addEventListener('focus', () => t.select());
+    t.addEventListener('keydown', e => { if(e.key === 'Enter') t.blur(); });
+    t.addEventListener('change', () => {
+      let v = parseFloat(t.value.replace(',', '.'));
+      if(!isFinite(v)) v = P[it.id];
+      v = Math.min(it.hi, Math.max(it.lo, v));
+      P[it.id] = v; t.value = fmtNum(v); s.value = v;   // slider pins at its end if v is out of range
+      schedule();
+    });
+  });
+})();
+
+let simulate = null, last = null, pending = false;
+
+function wlToRGB(w){ // rough visible-spectrum colour, only used to paint the axis
+  let r=0,g=0,b=0;
+  if(w<440){r=(440-w)/60;b=1}else if(w<490){g=(w-440)/50;b=1}else if(w<510){g=1;b=(510-w)/20}
+  else if(w<580){r=(w-510)/70;g=1}else if(w<645){r=1;g=(645-w)/65}else{r=1}
+  const f = w<420 ? .3+.7*(w-380)/40 : w>700 ? .3+.7*(780-w)/80 : 1;
+  return `rgb(${Math.round(255*r*f)},${Math.round(255*g*f)},${Math.round(255*b*f)})`;
+}
+
+function run(){
+  pending = false;
+  if(!simulate) return;
+  const v = ['L1','L2','c1','c3','R1','R2','R3','a'].map(k => P[k]);
+  last = JSON.parse(simulate(...v));
+  last.p = {...P};
+  drawSpec(); drawCav(); stats(); updateMap();
+  $('sw').style.background = `rgb(${last.rgb.join(',')})`;
+}
+function schedule(){ if(!pending){ pending = true; requestAnimationFrame(run); } }
+
+function drawSpec(){
+  const c = $('spec'), x = c.getContext('2d'), W = c.width, H = c.height;
+  const m = {l:48,r:14,t:14,b:46}, pw = W-m.l-m.r, ph = H-m.t-m.b;
+  x.clearRect(0,0,W,H);
+  const X = w => m.l + (w-380)/400*pw, Y = r => m.t + (1-r)*ph;
+  for(let px=0; px<pw; px++){ x.fillStyle = wlToRGB(380+px/pw*400); x.fillRect(m.l+px, H-m.b+8, 1, 12); }
+  const grad = x.createLinearGradient(m.l,0,m.l+pw,0);
+  for(let k=0;k<=20;k++) grad.addColorStop(k/20, wlToRGB(380+k*20));
+  x.save(); x.beginPath(); x.moveTo(X(380), Y(0));
+  last.R.forEach((r,i)=> x.lineTo(X(380+0.25*i), Y(r)));
+  x.lineTo(X(780), Y(0)); x.closePath(); x.globalAlpha = .55; x.fillStyle = grad; x.fill(); x.restore();
+  x.strokeStyle = '#3b4048'; x.fillStyle = '#a3a8b0'; x.font = '12px Figtree, sans-serif'; x.lineWidth = 1;
+  x.textAlign = 'center';
+  for(let w=400; w<=780; w+=50){ x.beginPath(); x.moveTo(X(w),m.t); x.lineTo(X(w),m.t+ph); x.stroke(); x.fillText(w, X(w), H-m.b+34); }
+  x.textAlign = 'right';
+  for(let r=0; r<=1.001; r+=.25){ x.beginPath(); x.moveTo(m.l,Y(r)); x.lineTo(m.l+pw,Y(r)); x.stroke(); x.fillText(r.toFixed(2), m.l-6, Y(r)+4); }
+  x.textAlign = 'center'; x.fillText('wavelength (nm)', m.l+pw/2, H-4);
+  x.save(); x.translate(12, m.t+ph/2); x.rotate(-Math.PI/2); x.fillText('reflected fraction', 0, 0); x.restore();
+  x.strokeStyle = '#ebe8e2'; x.lineWidth = 1.4; x.beginPath();
+  last.R.forEach((r,i)=>{ const px = X(380+0.25*i), py = Y(r); i ? x.lineTo(px,py) : x.moveTo(px,py); });
+  x.stroke();
+}
+
+function drawCav(){
+  const c = $('cav'), x = c.getContext('2d'), W = c.width, H = c.height;
+  const {L1,L2,c1,c3,R1,R2,R3} = last.p;
+  x.clearRect(0,0,W,H);
+  const len = L => 60 + Math.min(L,1000)/1000*200;     // drawing is capped at 1000 nm
+  const x1 = 170, x2 = x1 + len(L1), x3 = x2 + len(L2), top = 40, bot = H-40, mid = H/2;
+  const sag = R => R === 0 ? 0 : Math.max(-34, Math.min(34, 12000/R));
+  const s1 = sag(c1), s3 = sag(c3);
+  const col = `rgb(${last.rgb.join(',')})`;
+  x.strokeStyle = 'rgba(255,255,255,.18)'; x.lineWidth = 1.5;
+  x.beginPath(); x.moveTo(x1, mid-26); x.lineTo(x2, mid-14); x.lineTo(x1, mid-2); x.lineTo(x2, mid+10); x.lineTo(x1, mid+22); x.stroke();
+  x.beginPath(); x.moveTo(x2, mid-8); x.lineTo(x3, mid+2); x.lineTo(x2, mid+12); x.lineTo(x3, mid+22); x.stroke();
+  const arrow = (x0,y0,xe,ye,color,wd) => {
+    x.strokeStyle = color; x.fillStyle = color; x.lineWidth = wd;
+    x.beginPath(); x.moveTo(x0,y0); x.lineTo(xe,ye); x.stroke();
+    const ang = Math.atan2(ye-y0, xe-x0);
+    x.beginPath(); x.moveTo(xe,ye); x.lineTo(xe-11*Math.cos(ang-.4), ye-11*Math.sin(ang-.4));
+    x.lineTo(xe-11*Math.cos(ang+.4), ye-11*Math.sin(ang+.4)); x.closePath(); x.fill();
+  };
+  arrow(30, mid-30, x1-6, mid-26, '#ffffff', 5);
+  arrow(x1-6, mid+30, 30, mid+50, col, 5);
+  x.lineCap = 'round';
+  // M1: concave toward the cavity when R > 0
+  x.strokeStyle = `rgba(160,205,230,${0.25 + 0.7*R1})`; x.lineWidth = 6;
+  x.beginPath(); x.moveTo(x1+s1, top); x.quadraticCurveTo(x1-s1, mid, x1+s1, bot); x.stroke();
+  // M2: flat, partially reflecting
+  x.strokeStyle = `rgba(160,205,230,${0.25 + 0.7*R2})`;
+  x.beginPath(); x.moveTo(x2, top); x.lineTo(x2, bot); x.stroke();
+  // M3: opaque, hatched
+  const bx = t => x3 - s3 + 2*s3*(1-Math.pow(2*t-1,2));
+  x.strokeStyle = '#d9d4c9'; x.lineWidth = 6;
+  x.beginPath(); x.moveTo(x3-s3, top); x.quadraticCurveTo(x3+s3, mid, x3-s3, bot); x.stroke();
+  x.strokeStyle = '#7b7f87'; x.lineWidth = 1.5;
+  for(let t=0.02; t<=0.98; t+=0.05){ const px = bx(t) + 4, py = top + t*(bot-top); x.beginPath(); x.moveTo(px,py); x.lineTo(px+14,py+10); x.stroke(); }
+  x.fillStyle = '#a3a8b0'; x.font = '13px Figtree, sans-serif'; x.textAlign = 'left';
+  x.fillText('white light in', 30, mid-42);
+  x.fillText('light that comes back', 30, mid+72);
+  x.textAlign = 'center';
+  x.fillText('M1', x1, bot+22); x.fillText('M2', x2, bot+22); x.fillText('M3', x3, bot+22);
+  x.fillText(`L₁ = ${fmtNum(L1)} nm`, (x1+x2)/2, top-14);
+  x.fillText(`L₂ = ${fmtNum(L2)} nm`, (x2+x3)/2, top-14);
+}
+
+function stats(){
+  const s = last, st = ok => ok ? 'stable' : '<span class="warn">unstable</span>';
+  const rows = [
+    ['Cavity 1 (M1–M2)', `${st(s.st1)}, g = ${s.g1[0].toFixed(3)}, ${s.g1[1].toFixed(3)}`],
+    ['Cavity 2 (M2–M3)', `${st(s.st2)}, g = ${s.g2[0].toFixed(3)}, ${s.g2[1].toFixed(3)}`],
+    ['FSR at 550 nm', `${s.fsr1.toFixed(2)} nm (cavity 1), ${s.fsr2.toFixed(2)} nm (cavity 2)`],
+    ['Mean reflected fraction', s.mean.toFixed(3)],
+    ['Display colour', `rgb(${s.rgb.join(', ')})`],
+  ];
+  if(!s.st1) rows.push(['Note', '<span class="warn">cavity 1 unstable: only M1 returns light</span>']);
+  else if(!s.st2) rows.push(['Note', '<span class="warn">cavity 2 unstable: light entering it is lost</span>']);
+  $('stats').innerHTML = rows.map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+
+
+// ---------- colour map over (L1, L2) ----------
+let mapRow = null, mapGen = 0, mapKey = '', mapTimer = null, mapInfo = null;
+const mapCanvas = document.createElement('canvas');
+const MM = {l:60, r:16, t:14, b:48};
+
+function mapRange(){
+  let lo = P.mlo, hi = P.mhi;
+  if(hi <= lo) hi = lo + 1;
+  return [lo, hi, Math.max(5, Math.round(P.mres))];
+}
+
+function updateMap(){
+  if(!mapRow) return;
+  const [lo, hi, n] = mapRange();
+  const key = JSON.stringify([P.c1,P.c3,P.R1,P.R2,P.R3,P.a,lo,hi,n]);
+  if(key === mapKey){ drawMap(); return; }
+  mapKey = key; mapGen++;
+  clearTimeout(mapTimer);
+  $('mapstat').textContent = 'updating…';
+  drawMap();
+  mapTimer = setTimeout(() => startMap(lo, hi, n), 250);
+}
+
+function startMap(lo, hi, n){
+  const gen = ++mapGen;
+  mapCanvas.width = n; mapCanvas.height = n;
+  const mx = mapCanvas.getContext('2d');
+  const img = mx.createImageData(n, n);
+  const q = {c1:P.c1, c3:P.c3, R1:P.R1, R2:P.R2, R3:P.R3, a:P.a};
+  mapInfo = {lo, hi, n};
+  let j = 0;
+  (function step(){
+    if(gen !== mapGen) return;
+    const t0 = performance.now();
+    while(j < n && performance.now() - t0 < 30){
+      const row = JSON.parse(mapRow(j, n, lo, hi, q.c1, q.c3, q.R1, q.R2, q.R3, q.a));
+      const y = n - 1 - j;                       // L2 increases upward
+      for(let i = 0; i < n; i++){
+        const k = (y*n + i)*4, o = i*4;
+        img.data[k] = row[o]; img.data[k+1] = row[o+1]; img.data[k+2] = row[o+2];
+        img.data[k+3] = row[o+3] ? 255 : 90;
+      }
+      j++;
+    }
+    mx.putImageData(img, 0, 0);
+    drawMap();
+    if(j < n){ $('mapstat').textContent = `computing ${Math.round(100*j/n)}%`; setTimeout(step, 0); }
+    else $('mapstat').textContent = '';
+  })();
+}
+
+function drawMap(){
+  const c = $('map'), x = c.getContext('2d'), W = c.width, H = c.height;
+  const pw = W - MM.l - MM.r, ph = H - MM.t - MM.b;
+  x.clearRect(0, 0, W, H);
+  x.fillStyle = '#16181c'; x.fillRect(MM.l, MM.t, pw, ph);
+  if(!mapInfo) return;
+  const {lo, hi} = mapInfo;
+  x.imageSmoothingEnabled = false;
+  x.drawImage(mapCanvas, MM.l, MM.t, pw, ph);
+  x.strokeStyle = '#434852'; x.lineWidth = 1; x.strokeRect(MM.l + .5, MM.t + .5, pw, ph);
+  x.fillStyle = '#a3a8b0'; x.font = '12px Figtree, sans-serif';
+  const tick = (v) => fmtNum(Math.round(v*10)/10);
+  x.textAlign = 'center';
+  for(let k = 0; k <= 5; k++){
+    const v = lo + (hi-lo)*k/5, px = MM.l + pw*k/5;
+    x.fillText(tick(v), px, MM.t + ph + 18);
+    x.beginPath(); x.moveTo(px, MM.t + ph); x.lineTo(px, MM.t + ph + 4); x.stroke();
+  }
+  x.fillText('L₁ (nm)', MM.l + pw/2, H - 6);
+  x.textAlign = 'right';
+  for(let k = 0; k <= 5; k++){
+    const v = lo + (hi-lo)*k/5, py = MM.t + ph*(1 - k/5);
+    x.fillText(tick(v), MM.l - 8, py + 4);
+    x.beginPath(); x.moveTo(MM.l - 4, py); x.lineTo(MM.l, py); x.stroke();
+  }
+  x.save(); x.translate(14, MM.t + ph/2); x.rotate(-Math.PI/2); x.textAlign = 'center'; x.fillText('L₂ (nm)', 0, 0); x.restore();
+  // current (L1, L2)
+  const cx = MM.l + pw*(P.L1 - lo)/(hi - lo), cy = MM.t + ph*(1 - (P.L2 - lo)/(hi - lo));
+  if(cx >= MM.l && cx <= MM.l + pw && cy >= MM.t && cy <= MM.t + ph){
+    for(const [col, w] of [['#16181c', 4], ['#ffffff', 1.5]]){
+      x.strokeStyle = col; x.lineWidth = w;
+      x.beginPath(); x.arc(cx, cy, 7, 0, 2*Math.PI); x.moveTo(cx-14, cy); x.lineTo(cx-7, cy); x.moveTo(cx+7, cy); x.lineTo(cx+14, cy);
+      x.moveTo(cx, cy-14); x.lineTo(cx, cy-7); x.moveTo(cx, cy+7); x.lineTo(cx, cy+14); x.stroke();
+    }
+  }
+}
+
+(function mapPointer(){
+  const c = $('map');
+  const pick = e => {
+    if(!mapInfo) return;
+    const r = c.getBoundingClientRect(), sx = c.width / r.width, sy = c.height / r.height;
+    const px = (e.clientX - r.left)*sx - MM.l, py = (e.clientY - r.top)*sy - MM.t;
+    const pw = c.width - MM.l - MM.r, ph = c.height - MM.t - MM.b;
+    if(px < 0 || px > pw || py < 0 || py > ph) return;
+    const {lo, hi} = mapInfo;
+    const L1 = Math.round((lo + (hi-lo)*px/pw)*10)/10, L2 = Math.round((lo + (hi-lo)*(1 - py/ph))*10)/10;
+    for(const [id, v] of [['L1', L1], ['L2', L2]]){ P[id] = v; $('v'+id).value = fmtNum(v); $(id).value = v; }
+    schedule();
+  };
+  c.addEventListener('pointerdown', e => { c.setPointerCapture(e.pointerId); pick(e); });
+  c.addEventListener('pointermove', e => { if(e.buttons) pick(e); });
+})();
+
+(async () => {
+  try {
+    const py = await loadPyodide();
+    py.runPython($('sim').textContent);
+    simulate = py.globals.get('simulate');
+    mapRow = py.globals.get('map_row');
+    $('status').textContent = 'Python ready. Simulation runs in your browser.';
+    run();
+  } catch(e){
+    $('status').innerHTML = '<span class="warn">Could not load Pyodide. This file needs internet access on first load.</span>';
+    console.error(e);
+  }
+})();
+</script>
+</body>
+</html>
